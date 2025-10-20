@@ -19,10 +19,11 @@ package jose
 import (
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/go-jose/go-jose/v4/testutils/assert"
 )
 
 const trustedCA = `
@@ -119,6 +120,9 @@ func TestCompactParseJWS(t *testing.T) {
 		"////.eyJhbGciOiJYWVoifQ.c2lnbmF0dXJl",
 		// Invalid header
 		"cGF5bG9hZA.cGF5bG9hZA.c2lnbmF0dXJl",
+		// Too many parts
+		"eyJhbGciOiJYWVoifQ.cGF5bG9hZA.c2lnbmF0dXJl.....................................................",
+		"eyJhbGciOiJYWVoifQ.cGF5bG9hZA.c2lnbmF0dXJl.cGF5bG9hZA.cGF5bG9hZA.cGF5bG9hZA....................",
 	}
 
 	for i := range failures {
@@ -434,6 +438,60 @@ func TestErrorMissingPayloadJWS(t *testing.T) {
 	}
 }
 
+func TestErrorUnexpectedSignatureAlgorithmInProtected(t *testing.T) {
+	// protected: {"alg":"HS256", "jwk":{"kty":"oct", "k":"MTEx"}}
+	msg := `{"payload":"TG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFtZXQ","protected":"eyJhbGciOiJIUzI1NiIsICJqd2siOnsia3R5Ijoib2N0IiwgImsiOiJNVEV4In19","signature":"lvo41ZZsuHwQvSh0uJtEXRR3vmuBJ7in6qMoD7p9jyo"}`
+
+	_, err := ParseSigned(msg, []SignatureAlgorithm{ES256})
+	if err == nil {
+		t.Fatal("was able to parse message with unexpected signature algorithm")
+	}
+	var errUnexpectedSigAlg *ErrUnexpectedSignatureAlgorithm
+	if !errors.As(err, &errUnexpectedSigAlg) {
+		t.Fatal("unexpected error type, should be UnsupportedAlgorithmError")
+	}
+	if errUnexpectedSigAlg.Got != HS256 {
+		t.Fatalf("unexpected algo should be HS256, got: %s", errUnexpectedSigAlg.Got)
+	}
+	if len(errUnexpectedSigAlg.expected) != 1 {
+		t.Fatalf("expected algo should be a single algo, got: %d", len(errUnexpectedSigAlg.expected))
+	}
+	if errUnexpectedSigAlg.expected[0] != ES256 {
+		t.Fatalf("expected algo should be ES256, got: %s", errUnexpectedSigAlg.expected)
+	}
+}
+
+func TestErrorUnexpectedSignatureAlgorithmInSignatures(t *testing.T) {
+	// protected: {"alg":"HS256", "jwk":{"kty":"oct", "k":"MTEx"}}
+	msg := `{
+		"payload":"TG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFtZXQ",
+		"signatures":[
+			{
+				"protected":"eyJhbGciOiJIUzI1NiIsICJqd2siOnsia3R5Ijoib2N0IiwgImsiOiJNVEV4In19",
+				"signature":"lvo41ZZsuHwQvSh0uJtEXRR3vmuBJ7in6qMoD7p9jyo"
+			}
+		]
+	}`
+
+	_, err := ParseSigned(msg, []SignatureAlgorithm{ES256})
+	if err == nil {
+		t.Fatal("was able to parse message with unexpected signature algorithm")
+	}
+	var errUnexpectedSigAlg *ErrUnexpectedSignatureAlgorithm
+	if !errors.As(err, &errUnexpectedSigAlg) {
+		t.Fatal("unexpected error type, should be UnsupportedAlgorithmError")
+	}
+	if errUnexpectedSigAlg.Got != HS256 {
+		t.Fatalf("unexpected algo should be HS256, got: %s", errUnexpectedSigAlg.Got)
+	}
+	if len(errUnexpectedSigAlg.expected) != 1 {
+		t.Fatalf("expected algo should be a single algo, got: %d", len(errUnexpectedSigAlg.expected))
+	}
+	if errUnexpectedSigAlg.expected[0] != ES256 {
+		t.Fatalf("expected algo should be ES256, got: %s", errUnexpectedSigAlg.expected)
+	}
+}
+
 // Test that a null value in the header doesn't panic
 func TestNullHeaderValue(t *testing.T) {
 	msg := `{
@@ -639,7 +697,9 @@ func TestJWSComputeAuthDataBase64(t *testing.T) {
 		},
 	})
 	// Invalid header, should return error
-	assert.NotNil(t, err)
+	if err == nil {
+		t.Errorf("expected error when computing auth data for invalid signature")
+	}
 
 	payload := []byte{0x01}
 	encodedPayload := base64.RawURLEncoding.EncodeToString(payload)
@@ -652,7 +712,8 @@ func TestJWSComputeAuthDataBase64(t *testing.T) {
 			Protected: b64TrueHeader,
 		},
 	})
-	assert.Nil(t, err)
+	assert.NoError(t, err, "computing auth data for \"b64\": true")
+
 	// Payload should be b64 encoded
 	assert.Len(t, data, len(b64TrueHeader.base64())+len(encodedPayload)+1)
 
@@ -661,7 +722,7 @@ func TestJWSComputeAuthDataBase64(t *testing.T) {
 			Protected: b64FalseHeader,
 		},
 	})
-	assert.Nil(t, err)
+	assert.NoError(t, err, "computing auth data for \"b64\": false")
 	// Payload should *not* be b64 encoded
 	assert.Len(t, data, len(b64FalseHeader.base64())+len(payload)+1)
 }
@@ -690,4 +751,14 @@ func TestInvalidHMACKeySize(t *testing.T) {
 	assert.NoError(t, err)
 	_, err = s.Sign([]byte("Lorem ipsum dolor sit amet"))
 	assert.ErrorIs(t, err, ErrInvalidKeySize)
+}
+
+func BenchmarkParseSignedCompat(b *testing.B) {
+	raw := `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXIiLCJzdWIiOiJzdWJqZWN0In0.OFD0iVfPczqWBA_TRi1jGB5PF699eekcHt4D6qNoimc`
+
+	for range b.N {
+		if _, err := ParseSignedCompact(raw, []SignatureAlgorithm{HS256}); err != nil {
+			panic(err)
+		}
+	}
 }

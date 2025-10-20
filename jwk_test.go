@@ -27,6 +27,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"math/big"
 	"reflect"
 	"strings"
@@ -34,9 +35,8 @@ import (
 
 	"github.com/go-jose/go-jose/v4/json"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/go-jose/go-jose/v4/testutils/assert"
+	"github.com/go-jose/go-jose/v4/testutils/require"
 )
 
 // Test chain of two X.509 certificates
@@ -316,8 +316,9 @@ func TestRoundtripX509(t *testing.T) {
 			jsonbar2, err := jwk2.MarshalJSON()
 			require.NoError(t, err)
 
-			require.Empty(t, cmp.Diff(jsonbar, jsonbar2))
 			if !bytes.Equal(jsonbar, jsonbar2) {
+				t.Logf("Original JSON: %s", string(jsonbar))
+				t.Logf("New JSON: %s", string(jsonbar2))
 				t.Error("roundtrip should not lose information")
 			}
 		})
@@ -364,7 +365,9 @@ func TestRoundtripX509Hex(t *testing.T) {
 	var j1, j2 map[string]interface{}
 	require.NoError(t, json.Unmarshal(js, &j1))
 	require.NoError(t, json.Unmarshal([]byte(output), &j2))
-	require.Empty(t, cmp.Diff(j1, j2))
+	if !reflect.DeepEqual(j1, j2) {
+		t.Errorf("Not equal after round trip: '%v' '%v'", j1, j2)
+	}
 }
 
 func TestCertificatesURL(t *testing.T) {
@@ -384,7 +387,9 @@ func TestCertificatesURL(t *testing.T) {
 	var j1, j2 map[string]interface{}
 	require.NoError(t, json.Unmarshal(js, &j1))
 	require.NoError(t, json.Unmarshal([]byte(urlJWK), &j2))
-	require.Empty(t, cmp.Diff(j1, j2))
+	if !reflect.DeepEqual(j1, j2) {
+		t.Errorf("Not equal after round trip: '%v' '%v'", j1, j2)
+	}
 
 	var invalidURLJWK = `{
    "kty":"RSA",
@@ -393,7 +398,7 @@ func TestCertificatesURL(t *testing.T) {
    "x5u": "://example.com/keys.json"
 }`
 	err = jwk2.UnmarshalJSON([]byte(invalidURLJWK))
-	require.EqualError(t, err, "go-jose/go-jose: invalid JWK, x5u header is invalid URL: parse \"://example.com/keys.json\": missing protocol scheme")
+	require.Equal(t, err.Error(), "go-jose/go-jose: invalid JWK, x5u header is invalid URL: parse \"://example.com/keys.json\": missing protocol scheme")
 }
 
 func TestInvalidThumbprintsX509(t *testing.T) {
@@ -676,6 +681,15 @@ func TestWebKeyVectorsInvalid(t *testing.T) {
 	}
 }
 
+// TestJWKUnsupported checks for an error when parsing a JWK with an unsupported key type.
+func TestJWKUnsupported(t *testing.T) {
+	var jwk JSONWebKey
+	err := jwk.UnmarshalJSON([]byte(`{"kty": "XXX"}`))
+	if !errors.Is(err, ErrUnsupportedKeyType) {
+		t.Error("expected ErrUnsupportedKeyType, got:", err)
+	}
+}
+
 // Test vectors from RFC 7520
 var cookbookJWKs = []string{
 	// EC Public
@@ -824,9 +838,9 @@ func TestEd25519Serialization(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assert.True(t, bytes.Equal(
-		[]byte(jwk.Key.(ed25519.PrivateKey).Public().(ed25519.PublicKey)),
-		[]byte(jwk2.Key.(ed25519.PrivateKey).Public().(ed25519.PublicKey))))
+	assert.EqualSlice(t,
+		jwk.Key.(ed25519.PrivateKey).Public().(ed25519.PublicKey),
+		jwk2.Key.(ed25519.PrivateKey).Public().(ed25519.PublicKey))
 }
 
 type fakeOpaqueSigner struct {
